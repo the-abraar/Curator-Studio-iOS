@@ -640,6 +640,15 @@ def make_handler(config, store):
                 return None
             return candidate
 
+        def _content_disposition(self, path):
+            # HTTP headers are latin-1 only; video titles routinely carry
+            # characters (curly quotes, "…", emoji) outside that range, which
+            # would otherwise crash the request with a UnicodeEncodeError.
+            name = os.path.basename(path).replace('"', "")
+            ascii_name = name.encode("ascii", "ignore").decode("ascii").strip() or "download"
+            return 'attachment; filename="%s"; filename*=UTF-8\'\'%s' % (
+                ascii_name, urllib.parse.quote(name))
+
         def _serve_file(self, path):
             if not path or not os.path.isfile(path):
                 self._send_json({"error": "not found"}, 404)
@@ -667,9 +676,7 @@ def make_handler(config, store):
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(length))
             self.send_header("Accept-Ranges", "bytes")
-            self.send_header(
-                "Content-Disposition",
-                'attachment; filename="%s"' % os.path.basename(path).replace('"', ""))
+            self.send_header("Content-Disposition", self._content_disposition(path))
             if status == 206:
                 self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
             self.end_headers()
