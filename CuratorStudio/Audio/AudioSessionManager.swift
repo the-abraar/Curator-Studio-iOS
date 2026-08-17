@@ -54,16 +54,25 @@ final class ScreenDimmer {
 
     var isDimmed: Bool { savedBrightness != nil }
 
+    /// The screen behind the foreground scene. Looked up through the active
+    /// window scene rather than `UIScreen.main`, which is deprecated as of
+    /// iOS 26.
+    private var activeScreen: UIScreen? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }?.screen
+    }
+
     func dim() {
-        guard savedBrightness == nil else { return }
-        savedBrightness = UIScreen.main.brightness
-        UIScreen.main.brightness = 0.0
+        guard savedBrightness == nil, let screen = activeScreen else { return }
+        savedBrightness = screen.brightness
+        screen.brightness = 0.0
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
     func restore() {
         if let saved = savedBrightness {
-            UIScreen.main.brightness = saved
+            activeScreen?.brightness = saved
         }
         savedBrightness = nil
         UIApplication.shared.isIdleTimerDisabled = false

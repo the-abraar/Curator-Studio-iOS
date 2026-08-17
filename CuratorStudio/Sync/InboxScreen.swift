@@ -390,8 +390,7 @@ struct AddLinkSheet: View {
                 TextField("e.g. Learn Stuff/German", text: $newFolder)
                 Button("Create") {
                     let clean = newFolder.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
-                    guard !clean.isEmpty else { return }
-                    try? library.createFolder(clean)
+                    guard !clean.isEmpty, (try? library.createFolder(clean)) != nil else { return }
                     folder = clean
                     newFolder = ""
                     Task { await library.rescan() }

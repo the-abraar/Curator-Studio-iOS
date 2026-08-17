@@ -78,7 +78,7 @@ final class PitchProcessor {
     private(set) var isEngineActive = false
 
     private var audioUnit: AudioUnit?
-    private var currentTap: Unmanaged<MTAudioProcessingTap>?
+    private var currentTap: MTAudioProcessingTap?
     private var activeTapForRender: MTAudioProcessingTap?
     private var sampleTime: Float64 = 0
     private let lock = NSLock()
@@ -101,7 +101,7 @@ final class PitchProcessor {
             process: pitchTapProcess
         )
 
-        var tapRef: Unmanaged<MTAudioProcessingTap>?
+        var tapRef: MTAudioProcessingTap?
         let status = MTAudioProcessingTapCreate(
             kCFAllocatorDefault,
             &callbacks,
@@ -112,7 +112,7 @@ final class PitchProcessor {
         guard status == noErr, let tapRef else { return nil }
 
         let params = AVMutableAudioMixInputParameters(track: track)
-        params.audioTapProcessor = tapRef.takeUnretainedValue()
+        params.audioTapProcessor = tapRef
 
         let mix = AVMutableAudioMix()
         mix.inputParameters = [params]
@@ -125,7 +125,6 @@ final class PitchProcessor {
         lock.lock()
         activeTapForRender = nil
         lock.unlock()
-        currentTap?.release()
         currentTap = nil
     }
 
@@ -277,6 +276,5 @@ final class PitchProcessor {
 
     deinit {
         teardownUnit()
-        currentTap?.release()
     }
 }

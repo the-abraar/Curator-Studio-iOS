@@ -124,6 +124,7 @@ final class PlayerModel: NSObject, ObservableObject {
         super.init()
         player.automaticallyWaitsToMinimizeStalling = false
         player.allowsExternalPlayback = true
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         installObservers()
         configureRemoteCommands()
     }
@@ -257,7 +258,6 @@ final class PlayerModel: NSObject, ObservableObject {
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let playerItem = AVPlayerItem(asset: asset)
         playerItem.audioTimePitchAlgorithm = preservePitchWhenChangingSpeed ? .spectral : .varispeed
-        playerItem.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
 
         replace(with: playerItem, item: item, asset: asset, autoplay: autoplay)
     }
