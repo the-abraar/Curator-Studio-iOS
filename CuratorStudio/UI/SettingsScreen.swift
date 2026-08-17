@@ -170,6 +170,7 @@ struct IngestHelpScreen: View {
                 step(2, "Your Mac downloads it", "A small daemon runs yt-dlp with the quality you picked, strips sponsor segments, embeds the thumbnail and chapters, and converts anything iOS can't decode into H.264/AAC MP4.")
                 step(3, "It lands in the right folder", "The Mac keeps the same folder names as your library, so a lesson filed under Learn Stuff/German goes there on both machines.")
                 step(4, "Curator Studio picks it up", "Next time you're on your home Wi-Fi with the app open, finished files transfer straight across and appear in your library.")
+                step(5, "The Mac deletes its copy", "Once a file is safely on your phone, the Mac removes it — it's a relay, not an archive. The link, title, channel and filename stay logged on the Mac either way.")
             }
 
             Section("Sending from Telegram") {

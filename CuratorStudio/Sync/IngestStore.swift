@@ -330,7 +330,9 @@ final class IngestStore: ObservableObject {
             let destination = folder.isEmpty ? item.folder : folder
             _ = try library.adoptFile(at: temporaryURL, folder: destination, filename: item.name)
             await library.rescan()
-            lastMessage = "Copied “\(item.name)” across."
+            await link.deleteShelfItem(path: item.path)
+            shelf.removeAll { $0.path == item.path }
+            lastMessage = "Copied “\(item.name)” across — removed from your Mac."
         } catch {
             lastMessage = "Transfer failed: \(friendly(error))"
         }

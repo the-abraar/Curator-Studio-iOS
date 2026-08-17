@@ -241,6 +241,14 @@ struct MacLink {
         let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) ?? path
         return try request("/shelf/file?path=\(encoded)")
     }
+
+    /// The Mac is a relay, not an archive — once a shelf item has been
+    /// copied to the phone, its copy on the Mac is deleted (logged first).
+    func deleteShelfItem(path: String) async {
+        struct Ok: Decodable { let ok: Bool }
+        let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) ?? path
+        _ = try? await send(try request("/shelf/file?path=\(encoded)", method: "DELETE"), as: Ok.self)
+    }
 }
 
 extension CharacterSet {

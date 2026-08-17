@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct InboxScreen: View {
 
@@ -281,6 +282,10 @@ struct AddLinkSheet: View {
     @State private var url = ""
     @State private var newFolder = ""
     @State private var creatingFolder = false
+    @State private var showingFileImporter = false
+    @State private var fileImportError: String?
+    @State private var showingBulkNamePrompt = false
+    @State private var bulkFolderInput = ""
 
     private var quality: DownloadQuality {
         DownloadQuality(rawValue: qualityRaw) ?? .mid
@@ -293,30 +298,53 @@ struct AddLinkSheet: View {
         return all.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
+    /// Every link found in the text field, whether it's one pasted URL or a
+    /// whole batch separated by commas and/or new lines.
+    private var links: [String] {
+        url.components(separatedBy: CharacterSet(charactersIn: ",\n\r\t "))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.lowercased().hasPrefix("http://") || $0.lowercased().hasPrefix("https://") }
+    }
+
+    private var isBulk: Bool { links.count > 1 }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    HStack {
-                        TextField("https://youtube.com/watch?v=…", text: $url, axis: .vertical)
+                    HStack(alignment: .top) {
+                        TextField("https://youtube.com/watch?v=… — or paste/import many, one per line or comma-separated", text: $url, axis: .vertical)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
-                            .lineLimit(1...3)
-                        Button {
-                            if let pasted = UIPasteboard.general.string {
-                                url = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .lineLimit(1...8)
+                        VStack(spacing: 14) {
+                            Button {
+                                if let pasted = UIPasteboard.general.string {
+                                    url = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                                }
+                            } label: {
+                                Image(systemName: "doc.on.clipboard")
                             }
-                        } label: {
-                            Image(systemName: "doc.on.clipboard")
+                            Button {
+                                showingFileImporter = true
+                            } label: {
+                                Image(systemName: "doc.badge.plus")
+                            }
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.accent)
                     }
+                    if isBulk {
+                        Label("\(links.count) links found — these will all go to one folder.",
+                              systemImage: "square.stack.3d.up")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } header: {
                     Text("Link")
                 } footer: {
-                    Text("YouTube and anything else yt-dlp handles. Paste a playlist URL and add the word “playlist” to grab the lot.")
+                    Text("YouTube and anything else yt-dlp handles. Paste one link, or a whole batch separated by commas or new lines, or import a text file with the \(Image(systemName: "doc.badge.plus")) button. Add the word “playlist” after a link to grab the whole thing.")
                 }
 
                 Section("Quality") {
@@ -366,16 +394,14 @@ struct AddLinkSheet: View {
 
                 Section {
                     Button {
-                        let target = url
-                        let chosen = quality
-                        let destination = folder
-                        Task {
-                            await ingest.submit(url: target, quality: chosen, folder: destination)
-                            dismiss()
+                        if isBulk {
+                            bulkFolderInput = folder.isEmpty ? "Randoms" : folder
+                            showingBulkNamePrompt = true
+                        } else {
+                            send(to: folder)
                         }
                     } label: {
-                        Label(ingest.connection.isOnline ? "Send to Mac" : "Save for later",
-                              systemImage: ingest.connection.isOnline ? "paperplane.fill" : "tray.and.arrow.down")
+                        Label(sendLabel, systemImage: sendSymbol)
                             .frame(maxWidth: .infinity)
                     }
                     .disabled(url.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -397,7 +423,69 @@ struct AddLinkSheet: View {
                 }
                 Button("Cancel", role: .cancel) { newFolder = "" }
             }
+            .alert("Name this batch", isPresented: $showingBulkNamePrompt) {
+                TextField("e.g. Guitar Lessons", text: $bulkFolderInput)
+                Button("Start Download") {
+                    let clean = bulkFolderInput.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
+                    guard !clean.isEmpty else { return }
+                    send(to: clean)
+                }
+                Button("Cancel", role: .cancel) { bulkFolderInput = "" }
+            } message: {
+                Text("\(links.count) links will all download into one folder on your Mac — what should it be called?")
+            }
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.plainText, .commaSeparatedText],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let fileURL = urls.first else { return }
+                    importLinks(from: fileURL)
+                case .failure(let error):
+                    fileImportError = error.localizedDescription
+                }
+            }
+            .alert("Couldn't read that file", isPresented: Binding(
+                get: { fileImportError != nil },
+                set: { if !$0 { fileImportError = nil } }
+            )) {
+                Button("OK") { fileImportError = nil }
+            } message: {
+                Text(fileImportError ?? "")
+            }
         }
+    }
+
+    private var sendLabel: String {
+        guard ingest.connection.isOnline else { return "Save for later" }
+        return isBulk ? "Send \(links.count) links to Mac" : "Send to Mac"
+    }
+
+    private var sendSymbol: String {
+        ingest.connection.isOnline ? "paperplane.fill" : "tray.and.arrow.down"
+    }
+
+    private func send(to destination: String) {
+        let target = url
+        let chosen = quality
+        folder = destination
+        Task {
+            await ingest.submit(url: target, quality: chosen, folder: destination)
+            dismiss()
+        }
+    }
+
+    private func importLinks(from fileURL: URL) {
+        let accessed = fileURL.startAccessingSecurityScopedResource()
+        defer { if accessed { fileURL.stopAccessingSecurityScopedResource() } }
+        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            fileImportError = "That didn't look like a plain text file."
+            return
+        }
+        let existing = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        url = existing.isEmpty ? contents : existing + "\n" + contents
     }
 }
 

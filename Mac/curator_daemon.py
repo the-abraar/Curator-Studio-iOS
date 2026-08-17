@@ -40,6 +40,7 @@ CONFIG_DIR = os.path.join(HOME, ".curator-studio")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
 LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
+HISTORY_PATH = os.path.join(CONFIG_DIR, "history.jsonl")
 
 VIDEO_EXTS = {".mp4", ".m4v", ".mov", ".mpg", ".mpeg", ".3gp"}
 AUDIO_EXTS = {".mp3", ".m4a", ".m4b", ".aac", ".wav", ".aif", ".aiff", ".caf", ".flac"}
@@ -196,22 +197,188 @@ class Store:
         return None
 
 
+class History:
+    """
+    Append-only record of everything this Mac has ever fetched: the link,
+    the title, the channel, the filename it was saved as, the folder,
+    the quality. The Mac is a relay, not an archive — once a file has been
+    handed to the phone (or abandoned) it gets deleted, but this log is the
+    permanent trace that it ever existed.
+    """
+
+    def __init__(self):
+        self.lock = threading.RLock()
+
+    def append(self, entry):
+        record = dict(entry)
+        record.setdefault("recorded_at", time.time())
+        line = json.dumps(record)
+        with self.lock:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            with open(HISTORY_PATH, "a") as handle:
+                handle.write(line + "\n")
+
+    def tail(self, limit=200):
+        if not os.path.exists(HISTORY_PATH):
+            return []
+        entries = []
+        with self.lock:
+            with open(HISTORY_PATH) as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except ValueError:
+                        continue
+        return entries[-limit:]
+
+
+def resolve_library_path(config, relative):
+    """Keeps a relative library path inside library_root; None if it would escape."""
+    root = os.path.realpath(config["library_root"])
+    candidate = os.path.realpath(os.path.join(root, relative or ""))
+    if candidate != root and not candidate.startswith(root + os.sep):
+        return None
+    return candidate
+
+
+def history_entry_for_job(job, delivered_at=None):
+    return {
+        "job_id": job.get("id"),
+        "url": job.get("url"),
+        "title": job.get("title"),
+        "channel": job.get("channel"),
+        "channel_url": job.get("channel_url"),
+        "quality": job.get("quality"),
+        "folder": job.get("folder"),
+        "filename": job.get("filename"),
+        "duration": job.get("duration"),
+        "size": job.get("size"),
+        "source": job.get("source"),
+        "downloaded_at": job.get("updated"),
+        "delivered_at": delivered_at,
+    }
+
+
+def record_and_delete_job_file(config, history, job):
+    """
+    Logs a job's metadata to history, then removes the media file (and its
+    sidecar) from disk. Always called once a file is done being useful on
+    the Mac — after it's been handed to the phone, or when its job is
+    dropped before ever being picked up.
+    """
+    relative = job.get("file")
+    path = resolve_library_path(config, relative) if relative else None
+    exists = bool(path and os.path.isfile(path))
+
+    entry = history_entry_for_job(job, delivered_at=time.time())
+    entry["deleted"] = exists
+    history.append(entry)
+
+    if not exists:
+        return
+    try:
+        os.remove(path)
+    except OSError as exc:
+        log("could not delete delivered file:", path, exc)
+        return
+    sidecar = os.path.splitext(path)[0] + ".curator.json"
+    if os.path.exists(sidecar):
+        try:
+            os.remove(sidecar)
+        except OSError:
+            pass
+
+
+def reconcile_existing_library(config, history):
+    """
+    Runs on every startup. Anything already sitting in the library folder —
+    leftovers from before this feature existed, or files nobody ever pulled
+    to the phone — gets its metadata captured to history and then deleted.
+    Reads the per-file .curator.json sidecar for metadata when one exists.
+    """
+    root = config["library_root"]
+    if not os.path.isdir(root):
+        return
+    removed = 0
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in files:
+            if os.path.splitext(name)[1].lower() not in MEDIA_EXTS:
+                continue
+            path = os.path.join(base, name)
+            sidecar_path = os.path.splitext(path)[0] + ".curator.json"
+            meta = {}
+            if os.path.exists(sidecar_path):
+                try:
+                    with open(sidecar_path) as handle:
+                        meta = json.load(handle)
+                except Exception:
+                    meta = {}
+            try:
+                stat = os.stat(path)
+                size, recorded_time = stat.st_size, stat.st_mtime
+            except OSError:
+                size, recorded_time = 0, time.time()
+
+            relative_folder = os.path.relpath(base, root)
+            history.append({
+                "job_id": None,
+                "url": meta.get("source_url"),
+                "title": meta.get("title") or os.path.splitext(name)[0],
+                "channel": meta.get("channel"),
+                "channel_url": meta.get("channel_url"),
+                "quality": meta.get("quality_requested"),
+                "folder": "" if relative_folder == "." else relative_folder,
+                "filename": name,
+                "duration": meta.get("duration"),
+                "size": size,
+                "source": "reconciled",
+                "downloaded_at": meta.get("downloaded_at") or recorded_time,
+                "delivered_at": None,
+                "deleted": True,
+            })
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError as exc:
+                log("reconcile: could not delete", path, exc)
+                continue
+            if os.path.exists(sidecar_path):
+                try:
+                    os.remove(sidecar_path)
+                except OSError:
+                    pass
+    if removed:
+        log("reconcile: recorded and removed %d pre-existing file(s) — logged to %s"
+            % (removed, HISTORY_PATH))
+
+
 # ---------------------------------------------------------------------------
 # Parsing requests
 # ---------------------------------------------------------------------------
 
-URL_RE = re.compile(r"https?://\S+")
+URL_RE = re.compile(r"https?://[^\s,]+")
 
 
 def parse_request(text, config):
     """
-    Turns a free-form line into job specs.
+    Turns a free-form line (or a whole pasted/uploaded batch) into job specs.
 
       https://youtu.be/abc            -> defaults
       https://youtu.be/abc mid        -> 720p
       https://youtu.be/abc audio learn stuff/german
       https://youtu.be/abc #guitar lessons best
 
+      https://youtu.be/a, https://youtu.be/b, https://youtu.be/c
+      https://youtu.be/a
+      https://youtu.be/b                -> bulk: one job per link, same
+                                            quality/folder for the whole batch
+
+    Commas and newlines both separate links, so a pasted comma list or an
+    uploaded text file (one link per line) both fan out into multiple jobs.
     Returns a list of dicts: {url, quality, folder, playlist}
     """
     matches = list(URL_RE.finditer(text or ""))
@@ -548,6 +715,7 @@ class Worker(threading.Thread):
         self.store.update(
             job["id"], title=title, folder=folder,
             duration=entry.get("duration"), channel=entry.get("uploader"),
+            channel_url=entry.get("channel_url"),
             thumbnail=entry.get("thumbnail"), stage="downloading",
         )
         self.notifier(job, "started", title)
@@ -590,6 +758,8 @@ def new_job(url, quality, folder, source, chat_id=None, title=None):
         "file": None,
         "filename": None,
         "size": 0,
+        "channel": None,
+        "channel_url": None,
         "source": source,
         "chat_id": chat_id,
         "created": now,
@@ -602,7 +772,40 @@ def new_job(url, quality, folder, source, chat_id=None, title=None):
 # HTTP API
 # ---------------------------------------------------------------------------
 
-def make_handler(config, store):
+def delete_shelf_item(config, history, relative):
+    """Deletes a file found by browsing the shelf directly (not tied to a
+    job — e.g. something dropped into the library by hand), logging it to
+    history first. Returns True if a file was actually removed."""
+    path = resolve_library_path(config, relative)
+    if not path or not os.path.isfile(path):
+        return False
+    history.append({
+        "job_id": None,
+        "url": None,
+        "title": os.path.splitext(os.path.basename(path))[0],
+        "filename": os.path.basename(path),
+        "folder": os.path.dirname(relative or ""),
+        "size": os.path.getsize(path),
+        "source": "shelf",
+        "downloaded_at": None,
+        "delivered_at": time.time(),
+        "deleted": True,
+    })
+    try:
+        os.remove(path)
+    except OSError as exc:
+        log("could not delete shelf file:", path, exc)
+        return False
+    sidecar = os.path.splitext(path)[0] + ".curator.json"
+    if os.path.exists(sidecar):
+        try:
+            os.remove(sidecar)
+        except OSError:
+            pass
+    return True
+
+
+def make_handler(config, store, history):
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "CuratorStudio/1.0"
@@ -634,11 +837,7 @@ def make_handler(config, store):
             return False
 
         def _resolve_library_path(self, relative):
-            root = os.path.realpath(config["library_root"])
-            candidate = os.path.realpath(os.path.join(root, relative))
-            if not candidate.startswith(root + os.sep) and candidate != root:
-                return None
-            return candidate
+            return resolve_library_path(config, relative)
 
         def _content_disposition(self, path):
             # HTTP headers are latin-1 only; video titles routinely carry
@@ -761,6 +960,10 @@ def make_handler(config, store):
                 self._send_json({"items": self._shelf()})
                 return
 
+            if route == "/history":
+                self._send_json({"entries": history.tail(500)})
+                return
+
             if route == "/shelf/file":
                 rel = params.get("path", [""])[0]
                 self._serve_file(self._resolve_library_path(rel))
@@ -813,6 +1016,11 @@ def make_handler(config, store):
 
             if route.startswith("/jobs/") and route.endswith("/ack"):
                 job_id = route[len("/jobs/"):-len("/ack")]
+                # The phone has the file now — log it and delete the Mac's
+                # copy. The Mac is a relay, not an archive.
+                job = store.get(job_id)
+                if job and not job.get("delivered"):
+                    record_and_delete_job_file(config, history, job)
                 store.update(job_id, delivered=True, status="delivered")
                 self._send_json({"ok": True})
                 return
@@ -828,14 +1036,30 @@ def make_handler(config, store):
         def do_DELETE(self):
             if not self._authorised():
                 return
-            route = urllib.parse.urlparse(self.path).path.rstrip("/")
+            parsed = urllib.parse.urlparse(self.path)
+            route = parsed.path.rstrip("/")
+            params = urllib.parse.parse_qs(parsed.query)
+
             if route.startswith("/jobs/"):
                 job_id = route[len("/jobs/"):]
                 with store.lock:
+                    job = next((j for j in store.jobs if j["id"] == job_id), None)
                     store.jobs = [j for j in store.jobs if j["id"] != job_id]
                     store.save()
+                # Dropping a job that still has an undelivered file on disk
+                # abandons it — log it and delete it rather than leaving an
+                # orphaned file with no record.
+                if job and job.get("file") and not job.get("delivered"):
+                    record_and_delete_job_file(config, history, job)
                 self._send_json({"ok": True})
                 return
+
+            if route == "/shelf/file":
+                rel = params.get("path", [""])[0]
+                deleted = delete_shelf_item(config, history, rel)
+                self._send_json({"ok": True, "deleted": deleted})
+                return
+
             self._send_json({"error": "unknown route"}, 404)
 
     return Handler
@@ -1058,6 +1282,9 @@ def main():
                 job.get("title") or job["url"]))
         return
 
+    history = History()
+    reconcile_existing_library(config, history)
+
     telegram = TelegramBridge(config, store)
 
     def notifier(job, event, detail):
@@ -1078,12 +1305,13 @@ def main():
 
     bonjour = advertise(config) if config.get("advertise_bonjour", True) else None
 
-    handler = make_handler(config, store)
+    handler = make_handler(config, store, history)
     server = ThreadingHTTPServer(("0.0.0.0", int(config["port"])), handler)
     server.daemon_threads = True
 
     log("Curator Studio daemon ready")
-    log("  library : %s" % config["library_root"])
+    log("  library : %s (relay only — files are deleted once delivered)" % config["library_root"])
+    log("  history : %s" % HISTORY_PATH)
     log("  address : http://%s:%d" % (local_ip(), config["port"]))
     log("  token   : %s" % config["token"])
     log("  telegram: %s" % ("on" if telegram.token else "off"))
