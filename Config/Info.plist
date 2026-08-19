@@ -32,6 +32,8 @@
 		<string></string>
 	</dict>
 
+	<!-- Playback with the screen off. Downloads use a background URLSession, which
+	     needs no mode of its own. -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
@@ -63,18 +65,5 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-
-	<!-- Talking to the Mac daemon over your home Wi-Fi -->
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Curator Studio connects to the downloader running on your Mac so finished videos can transfer straight to this iPhone over your Wi-Fi.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_curator._tcp</string>
-	</array>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
 </dict>
 </plist>

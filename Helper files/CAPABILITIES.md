@@ -9,9 +9,10 @@ the setup guide; this is the inventory.
 - [Player — practice & listening](#player--practice--listening)
 - [Progress & state](#progress--state)
 - [Playlists](#playlists)
-- [Ingest — sending links](#ingest--sending-links)
-- [Ingest — what the Mac does](#ingest--what-the-mac-does)
-- [Ingest — getting files to the phone](#ingest--getting-files-to-the-phone)
+- [YouTube — browsing](#youtube--browsing)
+- [YouTube — subscriptions & history](#youtube--subscriptions--history)
+- [Downloading — sending links](#downloading--sending-links)
+- [Downloading — what the phone does](#downloading--what-the-phone-does)
 - [Settings & housekeeping](#settings--housekeeping)
 - [Platform & privacy](#platform--privacy)
 - [Known limits](#known-limits)
@@ -127,87 +128,70 @@ owns key. Speed's own pitch behaviour is a separate lever:
 
 ---
 
-## Ingest — sending links
+## YouTube — browsing
 
-Three channels, one queue.
-
-| Channel | Works from | Notes |
-|---|---|---|
-| **Telegram bot** | Anywhere, any device, on mobile data | Your own bot. Forward links straight out of other chats. Replies when a job starts and when it's ready. |
-| **iOS Share Sheet shortcut** | The YouTube app, Safari, anywhere with a share button | Asks for quality and folder, then posts to Telegram or straight to the Mac. |
-| **In-app composer** | The Inbox tab | Paste button, quality list with plain-English descriptions, folder picker drawn from your real tree, and inline folder creation. |
-
-**Request grammar** — the same everywhere:
-
-```
-<link>
-<link> mid
-<link> audio Learn Stuff/German
-<link> best Guitar Lessons
-<link> low Bike Stuff playlist
-```
-
-- Quality words: `best` · `high`/`1080` · `mid`/`720` · `low`/`480` · `audio`/`podcast`/`music`
-- Everything else after the link becomes the folder path, created if absent. `/` nests.
-- `playlist` fans a playlist URL out into one job per video.
-- Only text **after the last URL** counts as options, so pasting a link mid-sentence still works.
-- Multiple links in one message create multiple jobs.
-
-Bot commands: `/status` for the queue, `/folders` for what it knows, `/help`.
-
----
-
-## Ingest — what the Mac does
+A full NewPipe-style client, built on YouTube's own internal "InnerTube" endpoints —
+the same ones youtube.com and the official apps call. No API key, no account, no
+Google sign-in, and no third-party server in the middle.
 
 | Capability | Detail |
 |---|---|
-| yt-dlp with iPhone-safe formats | Prefers H.264 video + AAC audio streams at the requested ceiling. |
-| **Guaranteed playability** | Probes the finished file with `ffprobe`; if YouTube only offered VP9/AV1/Opus, transcodes to H.264/AAC MP4 with `+faststart`. Nothing ever lands unplayable. |
-| Audio extraction | `audio` tier produces M4A at maximum quality, video stripped. |
-| SponsorBlock | Removes sponsor, self-promo and interaction segments. Categories configurable. |
-| Embedded metadata | Thumbnail, title, and chapter markers baked into the file. |
-| JSON sidecar | `<name>.curator.json` beside each file: source URL, video id, channel, upload date, duration, description, full chapter list, requested quality, timestamp. |
-| Folder mirroring | Files land in the same folder names your phone uses, so both machines stay in sync. |
-| Collision handling | Existing filename? Appends the video id rather than overwriting. |
-| Persistent queue | Survives restarts; anything mid-flight when the daemon died goes back to queued. |
-| Concurrency | Two jobs at a time by default, configurable. |
-| Retry & delete | Swipe a failed job in the app, or use the API. |
-| Always running | launchd agent — starts with the Mac, restarts on crash, logs to `~/.curator-studio/daemon.log`. |
-| CLI | `--add`, `--status`, `--token`, `--foreground` for debugging. |
+| Search | Videos, channels and playlists, with filter chips for each. Endless scrolling through continuation pages. |
+| Search suggestions | Live autocomplete from YouTube's own suggest service, plus your recent searches. |
+| Discover | Topic shelves — Music, Guitar lessons, Technology, Science, News — fetched in parallel. (YouTube killed its logged-out Trending feed; this stands in for it.) |
+| Channels | Header with avatar, subscriber count and description; newest-first video list with paging. `@handles` resolve through search. |
+| Playlists | Whole playlist listing, every continuation page walked, with one-tap "download all". |
+| Watch | Streams in-app with AVPlayer, with the description, chapter list and an "up next" list of related videos. |
+| Paste a link | A video, Short, `youtu.be`, `/live/`, `/embed/`, playlist or channel URL — pasted into search or the link sheet — jumps straight to the right screen. |
+| Share out | Share sheet for any video or channel. |
 
----
-
-## Ingest — getting files to the phone
+## YouTube — subscriptions & history
 
 | Capability | Detail |
 |---|---|
-| Bonjour discovery | The Mac advertises `_curator._tcp`; the app finds it with no configuration. Manual IP + port as fallback. |
-| Token auth | A shared token generated at install, sent as `X-Curator-Token`. Only `/health` is open. |
-| Auto-pull | Finished files transfer on their own next time you're home with the app open. Can be switched off. |
-| Live progress | Separate progress for the Mac's download and the Wi-Fi transfer, with speed and ETA. |
-| Range streaming | Server supports HTTP Range, so transfers resume rather than restart. |
-| Offline queueing | Links entered while the Mac is unreachable are held on the phone and sent automatically when it reappears. |
-| Delivery acknowledgement | The Mac marks a job delivered so it's never pulled twice. |
-| **Browse Mac library** | Pull *any* media file in the Mac's folder — ripped DVDs, camera footage, an old MP3 collection — not just download jobs. Searchable. |
-| Safe paths | Every requested path is resolved and checked against the library root; traversal is rejected. |
-| Badge | The Inbox tab badges with active + ready + pending count. |
+| Subscriptions | Follow channels without an account. Stored in one JSON file on the phone. |
+| Subscription feed | Newest uploads across every channel you follow, interleaved round-robin so one prolific channel can't bury the rest. |
+| Watch history | Every video you open, newest first, swipe to remove, one tap to clear. Local only. |
+| Recent searches | Offered back as suggestions; clearable. |
 
-### HTTP API
+---
 
-All routes except `/health` require the token.
+## Downloading — sending links
 
-| Method | Route | Purpose |
-|---|---|---|
-| `GET` | `/health` | Service identity, queue counts |
-| `GET` | `/jobs` | Full job list with status and progress |
-| `POST` | `/jobs` | Queue a request — `{text, quality?, folder?}` |
-| `POST` | `/jobs/<id>/ack` | Mark delivered |
-| `POST` | `/jobs/<id>/retry` | Requeue a failure |
-| `DELETE` | `/jobs/<id>` | Drop a job |
-| `GET` | `/folders` | Folder names on the Mac |
-| `GET` | `/shelf` | Every media file in the library root |
-| `GET` | `/files/<id>` | Stream a job's file (Range) |
-| `GET` | `/shelf/file?path=` | Stream any library file (Range) |
+| Channel | Notes |
+|---|---|
+| **Download button** | On every video row, in every list — search results, channel, playlist, related, history. |
+| **Download sheet** | Quality list with plain-English descriptions, greyed out for anything YouTube isn't offering for that video, plus a folder picker drawn from your real library tree with inline folder creation. |
+| **Quick download** | One tap on the video screen, using your default quality and folder. |
+| **Paste links** | One URL, or a whole batch separated by commas or newlines, or imported from a text file. Playlist URLs fan out into one job per video. |
+| **Channel / playlist bulk** | "Download latest 10" on a channel, "Download all" on a playlist. |
+
+Quality words are the same vocabulary as before — `best` · `high` (1080p) · `mid`
+(720p) · `low` (480p) · `audio` — and the folder can be nested (`Learn Stuff/German`),
+created if it doesn't exist yet.
+
+---
+
+## Downloading — what the phone does
+
+| Capability | Detail |
+|---|---|
+| Format selection | Prefers H.264 video + AAC audio at the requested ceiling, because those are the only codecs AVFoundation will put in a playable MP4. VP9, AV1 and Opus renditions are parsed and deliberately skipped. |
+| **On-device muxing** | Anything above 720p exists only as separate video-only and audio-only streams. Both are downloaded and merged into one MP4 with `AVMutableComposition` — the job ffmpeg used to do on the Mac. |
+| Passthrough export | H.264/AAC is copied, not re-encoded, so merging a 40-minute lecture takes seconds rather than draining the battery. |
+| Audio extraction | The `audio` tier saves the AAC stream on its own as `.m4a`. |
+| SponsorBlock | Community-marked segments are cut out of the composition itself, so they're gone from the file. Six categories, individually switchable. |
+| Embedded metadata | Title, channel, description and the poster frame written into the file as tags. |
+| JSON sidecar | `<name>.curator.json` beside each file: source URL, video id, channel, quality, duration, chapter list and exactly which segments were removed. |
+| Chunked transfers | googlevideo refuses open-ended GETs, so streams are pulled as sequential ranged requests, the way yt-dlp does it. |
+| **Expiry recovery** | Stream URLs are signed and short-lived. When one starts being refused mid-download, the app re-extracts a fresh URL and carries on from the byte it stopped at — restarting the part from zero if even that keeps being turned down. |
+| **Unattended retries** | A refusal is usually YouTube deciding an address has asked too often, and it passes. A refused job waits ten minutes and tries itself again, up to three times, before it needs you. |
+| Background downloads | A background `URLSession` keeps transfers running when you leave the app or lock the phone; merging and filing finish next time the app is open. |
+| Persistent queue | Written to disk on every change. Killing the app mid-download loses nothing — interrupted parts restart, finished ones are picked up. |
+| Concurrency | Two jobs at a time by default, 1–4 configurable. |
+| Retry, cancel, remove | Swipe any job. Failures explain themselves rather than just going red. |
+| Collision handling | An existing filename gets ` (2)` appended rather than being overwritten. |
+| Badge | The YouTube tab badges with the number of active jobs. |
 
 ---
 
@@ -215,11 +199,12 @@ All routes except `/health` require the token.
 
 - Change or rescan the library folder.
 - Playback defaults: keep-pitch, transposition engine, autoplay-next.
-- Mac connection status, pairing sheet, auto-pull toggle.
+- Download settings: default quality, how many at once, SponsorBlock categories,
+  metadata embedding, sidecar writing.
 - Reset all progress, stars, watched marks and bookmarks. Files are never touched.
 - Clear the thumbnail cache.
 - In-app help: supported formats with conversion commands, every gesture, and a
-  four-step walkthrough of the Mac pipeline.
+  five-step walkthrough of how downloading works.
 
 ---
 
@@ -228,11 +213,11 @@ All routes except `/health` require the token.
 | | |
 |---|---|
 | **App** | SwiftUI, iOS 26 (drops to 18.0 with one build-setting change), iPhone and iPad, portrait and landscape, dark throughout. |
-| **Dependencies** | None. No SPM packages, no CocoaPods. |
-| **Daemon** | Python 3 standard library only, plus the `yt-dlp` / `ffmpeg` / `atomicparsley` binaries. |
-| **Network** | The Mac never opens a port to the internet. The phone reaches it over your LAN. Telegram, if enabled, is polled outbound only. |
-| **Accounts** | None. No analytics, no telemetry, no sign-in. |
-| **Data** | Resume state, playlists and pairing details live on-device. Media stays in your folder. |
+| **Dependencies** | None. No SPM packages, no CocoaPods, no companion machine. |
+| **Extraction** | A from-scratch Swift reimplementation of the InnerTube scraping NewPipe does on Android. Not a port of, or a bridge to, NewPipeExtractor — that's JVM code and can't run here. |
+| **Network** | YouTube's own endpoints, googlevideo for the streams, and SponsorBlock for segment lists. Nothing else. |
+| **Accounts** | None. No analytics, no telemetry, no sign-in, no server of ours. |
+| **Data** | Resume state, playlists, subscriptions, history and the download queue all live on-device. Media stays in your folder. |
 
 ### Supported formats
 
@@ -242,21 +227,25 @@ All routes except `/health` require the token.
 | **Audio** | MP3, M4A, M4B, AAC, WAV, AIFF, CAF, FLAC |
 | **Not playable** | MKV, AVI, WEBM, WMV, FLV, OGG/Opus — iOS has no decoder for these, in any app |
 
-Anything the daemon downloads is converted automatically.
+Downloads always land as H.264/AAC MP4 (or M4A for audio-only), so anything the app
+fetches for you is playable by definition.
 
 ---
 
 ## Known limits
 
-- **LAN transfers need the app open.** They run in the foreground. Audio playback
-  is unaffected — that uses the background audio mode, which is a different
-  mechanism.
-- **A sleeping Mac can't download.** The queue is persistent, so nothing is lost;
-  jobs run when it next wakes.
-- **yt-dlp goes stale.** YouTube changes often; most download failures are fixed
-  by `brew upgrade yt-dlp` and a retry.
-- **Age-restricted videos** need cookies — add `"--cookies-from-browser", "safari"`
-  to `build_download_command` in `curator_daemon.py`.
+- **YouTube fights anonymous downloads.** Requests are answered from a signed,
+  IP-bound, short-lived URL, and YouTube will refuse one part-way through — or
+  refuse a whole run for a while if it thinks you're a bot. The app re-extracts
+  and resumes automatically, but a download can still fail and need retrying
+  later. This affects every tool that doesn't sign in, `yt-dlp` included.
+- **1080p is the ceiling.** YouTube only serves H.264 up to 1080p; 4K exists
+  only as VP9 and AV1, which iOS won't put in a playable MP4. "Best" means the
+  best this phone can actually decode.
+- **Merging needs the app open.** Transfers keep running in the background, but
+  muxing and filing happen when the app is next foregrounded.
+- **Some videos won't resolve.** Age-restricted, members-only and region-blocked
+  videos need a signed-in session, which this app deliberately doesn't have.
 - **Extreme speed + transposition stack.** Past roughly 2× with a large
   transposition, artefacts become audible. That's the algorithms, not a bug.
 - **Free Apple ID builds expire after 7 days** and need re-running from Xcode.

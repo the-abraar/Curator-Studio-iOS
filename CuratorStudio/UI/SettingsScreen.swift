@@ -5,10 +5,10 @@ struct SettingsScreen: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var states: PlaybackStateStore
     @EnvironmentObject private var player: PlayerModel
-    @EnvironmentObject private var ingest: IngestStore
+    @EnvironmentObject private var downloads: DownloadManager
 
     @State private var showingPicker = false
-    @State private var showingPair = false
+    @State private var showingDownloadSettings = false
     @State private var confirmReset = false
 
     var body: some View {
@@ -38,7 +38,7 @@ struct SettingsScreen: View {
                 } header: {
                     Text("Library")
                 } footer: {
-                    Text("Curator Studio only reads the folder you pick. Your Mac drops finished downloads straight into it over Wi-Fi, and you can add files by hand too.")
+                    Text("Curator Studio only reads the folder you pick. Downloads from the YouTube tab land straight in it, and you can add files by hand too.")
                 }
 
                 Section {
@@ -53,21 +53,26 @@ struct SettingsScreen: View {
 
                 Section {
                     Button {
-                        showingPair = true
+                        showingDownloadSettings = true
                     } label: {
                         HStack {
-                            Label("Mac downloader", systemImage: "desktopcomputer")
+                            Label("Download settings", systemImage: "arrow.down.circle")
                             Spacer()
-                            Text(ingest.connection.isOnline ? "Connected" : "Not connected")
+                            Text(downloads.defaultQuality.label)
                                 .font(.caption)
-                                .foregroundStyle(ingest.connection.isOnline ? .green : .secondary)
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    Toggle("Pull finished downloads automatically", isOn: $ingest.autoPull)
+                    if downloads.badgeCount > 0 {
+                        Label("\(downloads.badgeCount) download\(downloads.badgeCount == 1 ? "" : "s") running",
+                              systemImage: "arrow.down.circle.dotted")
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.accent)
+                    }
                 } header: {
-                    Text("Ingest")
+                    Text("Downloads")
                 } footer: {
-                    Text("Send a YouTube link from the app, from Telegram, or from the YouTube share sheet. Your Mac downloads it in the right quality and Curator Studio picks it up over Wi-Fi.")
+                    Text("Quality, SponsorBlock and tagging for videos you pull down from the YouTube tab. Everything happens on this iPhone.")
                 }
 
                 Section {
@@ -84,7 +89,7 @@ struct SettingsScreen: View {
                     NavigationLink {
                         IngestHelpScreen()
                     } label: {
-                        Label("How the Mac pipeline works", systemImage: "arrow.triangle.branch")
+                        Label("How downloading works", systemImage: "arrow.triangle.branch")
                     }
                 } header: {
                     Text("Help")
@@ -121,7 +126,7 @@ struct SettingsScreen: View {
                 }
                 .ignoresSafeArea()
             }
-            .sheet(isPresented: $showingPair) { PairMacSheet() }
+            .sheet(isPresented: $showingDownloadSettings) { DownloadSettingsSheet() }
             .alert("Reset everything?", isPresented: $confirmReset) {
                 Button("Reset", role: .destructive) { states.clearAll() }
                 Button("Cancel", role: .cancel) {}
@@ -143,7 +148,7 @@ struct FormatHelpScreen: View {
                 Text("MKV, AVI, WEBM, WMV, FLV, OGG/Opus")
             }
             Section {
-                Text("iOS has no decoder for those containers. On your Mac, the quickest fix is:")
+                Text("iOS has no decoder for those containers. Downloads from the YouTube tab are always H.264/AAC MP4, so this only affects files you copy in yourself. To convert one, on any desktop:")
                     .font(.footnote)
                 Text("ffmpeg -i input.mkv -c copy output.mp4")
                     .font(.system(.footnote, design: .monospaced))
@@ -166,33 +171,34 @@ struct IngestHelpScreen: View {
     var body: some View {
         List {
             Section("The shape of it") {
-                step(1, "You send a link", "From the Inbox tab, from Telegram, or from the YouTube share sheet — wherever you happen to be.")
-                step(2, "Your Mac downloads it", "A small daemon runs yt-dlp with the quality you picked, strips sponsor segments, embeds the thumbnail and chapters, and converts anything iOS can't decode into H.264/AAC MP4.")
-                step(3, "It lands in the right folder", "The Mac keeps the same folder names as your library, so a lesson filed under Learn Stuff/German goes there on both machines.")
-                step(4, "Curator Studio picks it up", "Next time you're on your home Wi-Fi with the app open, finished files transfer straight across and appear in your library.")
-                step(5, "The Mac deletes its copy", "Once a file is safely on your phone, the Mac removes it — it's a relay, not an archive. The link, title, channel and filename stay logged on the Mac either way.")
+                step(1, "You find something", "Search the YouTube tab, open a channel or playlist you follow, or paste a link — a video, a Short, or a whole playlist.")
+                step(2, "The phone downloads it", "Straight from YouTube over your normal connection. Anything above 720p only exists as separate video and audio streams, so both come down at once.")
+                step(3, "It gets merged and trimmed", "The two streams are muxed into one MP4 with AVFoundation, sponsor segments are cut out, and the title, channel and artwork are written in as tags.")
+                step(4, "It lands in the right folder", "Into the library folder you picked — nested paths like Learn Stuff/German included — with a .curator.json sidecar holding the source link and chapters.")
+                step(5, "It's just a file", "Play it with the full player: speed, transposition, A-B loop, screen off, background audio. No connection needed ever again.")
             }
 
-            Section("Sending from Telegram") {
-                Text("Message your own bot:")
+            Section("While you're elsewhere") {
+                Text("Transfers run in a background session, so they keep going when you leave the app or lock the phone. Merging and filing need the app open — reopen it and anything that finished in the meantime completes itself.")
                     .font(.footnote)
-                Text("<link> mid Learn Stuff/AI")
-                    .font(.system(.footnote, design: .monospaced))
-                    .textSelection(.enabled)
-                Text("Quality words: best · high · mid · low · audio. Anything else becomes the folder. Add “playlist” to take a whole playlist.")
-                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Quality") {
+                Text("YouTube only serves H.264 up to 1080p; 4K exists only as VP9 and AV1, which iOS won't put in a playable MP4. Best therefore means the best this phone can actually decode — usually 1080p.")
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                Text("Everything runs on your own machines. The Mac never opens a port to the internet — the phone reaches it over your local Wi-Fi, and Telegram is only used as a message inbox if you switch it on.")
+                Text("No account, no API key, no server. The app talks to YouTube's own internal endpoints the way NewPipe does on Android, and to SponsorBlock for segment lists. Nothing else leaves the phone, and nothing is logged anywhere but here.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
                 Text("Privacy")
             }
         }
-        .navigationTitle("Mac pipeline")
+        .navigationTitle("Downloading")
         .navigationBarTitleDisplayMode(.inline)
     }
 

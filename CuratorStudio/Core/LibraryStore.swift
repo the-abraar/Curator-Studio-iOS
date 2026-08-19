@@ -98,7 +98,7 @@ final class LibraryStore: ObservableObject {
         root = scanned
         isScanning = false
         if let scanned, scanned.deepItemCount == 0 {
-            errorMessage = "No playable files found in “\(scanned.name)”. Copy some videos or audio in from your Mac and pull to refresh."
+            errorMessage = "No playable files found in “\(scanned.name)”. Download something from the YouTube tab, or copy files in with Files, then pull to refresh."
         }
     }
 

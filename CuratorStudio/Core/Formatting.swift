@@ -25,7 +25,26 @@ enum Fmt {
         let f = ByteCountFormatter()
         f.countStyle = .file
         f.allowedUnits = [.useMB, .useGB, .useKB]
+        // Otherwise a download that hasn't moved yet reads "Zero KB of 6.7 MB".
+        f.allowsNonnumericFormatting = false
         return f.string(fromByteCount: bytes)
+    }
+
+    /// 1.2M · 43K · 907 — for view counts, which arrive as a raw integer string.
+    static func count(_ value: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.maximumFractionDigits = 1
+        switch value {
+        case 1_000_000_000...:
+            return (f.string(from: NSNumber(value: Double(value) / 1_000_000_000)) ?? "") + "B"
+        case 1_000_000...:
+            return (f.string(from: NSNumber(value: Double(value) / 1_000_000)) ?? "") + "M"
+        case 1_000...:
+            return (f.string(from: NSNumber(value: Double(value) / 1_000)) ?? "") + "K"
+        default:
+            return "\(value)"
+        }
     }
 
     static func speed(_ value: Double) -> String {

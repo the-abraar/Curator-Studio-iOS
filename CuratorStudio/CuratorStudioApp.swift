@@ -1,14 +1,18 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 @main
 struct CuratorStudioApp: App {
+
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     @StateObject private var library = LibraryStore()
     @StateObject private var states = PlaybackStateStore.shared
     @StateObject private var playlists = PlaylistStore.shared
     @StateObject private var player = PlayerModel.shared
-    @StateObject private var ingest = IngestStore()
+    @StateObject private var downloads = DownloadManager()
+    @StateObject private var youtube = YouTubeStore()
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -23,14 +27,15 @@ struct CuratorStudioApp: App {
                 .environmentObject(states)
                 .environmentObject(playlists)
                 .environmentObject(player)
-                .environmentObject(ingest)
+                .environmentObject(downloads)
+                .environmentObject(youtube)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 .task {
                     player.attach(library: library)
-                    ingest.attach(library: library)
+                    downloads.attach(library: library)
                     await library.restoreSavedRoot()
-                    await ingest.refresh()
+                    await downloads.resume()
                 }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -40,10 +45,25 @@ struct CuratorStudioApp: App {
                 states.saveNow()
             case .active:
                 AudioSessionManager.activate()
-                Task { await ingest.refresh() }
+                Task { await downloads.resume() }
             default:
                 break
             }
         }
+    }
+}
+
+/// Exists for one reason: when iOS relaunches the app in the background because a stream download
+/// finished, it hands over a completion handler that must be called once the session's delegate
+/// has drained its events. Without it, transfers that complete while the app is dead get stuck.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        StreamFetcher.shared.backgroundCompletionHandler = completionHandler
+        StreamFetcher.shared.reconnect()
     }
 }

@@ -35,15 +35,3 @@ Carthage/Build/
 *.provisionprofile
 *.p12
 *.certSigningRequest
-
-# Python (Mac daemon)
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Daemon runtime state — never commit these, the token is a secret
-Mac/config.json
-Mac/state.json
-Mac/*.log
-.curator-studio/

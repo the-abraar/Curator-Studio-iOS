@@ -4,7 +4,7 @@ struct RootView: View {
 
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var player: PlayerModel
-    @EnvironmentObject private var ingest: IngestStore
+    @EnvironmentObject private var downloads: DownloadManager
     @State private var selectedTab = 0
 
     var body: some View {
@@ -35,9 +35,9 @@ struct RootView: View {
                     .tabItem { Label("Playlists", systemImage: "music.note.list") }
                     .tag(2)
 
-                InboxScreen()
-                    .tabItem { Label("Inbox", systemImage: "tray.and.arrow.down") }
-                    .badge(ingest.badgeCount)
+                YouTubeScreen()
+                    .tabItem { Label("YouTube", systemImage: "play.rectangle.on.rectangle") }
+                    .badge(downloads.badgeCount)
                     .tag(3)
 
                 SettingsScreen()
@@ -89,7 +89,7 @@ struct OnboardingView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     bullet("folder", "Pick any folder — On My iPhone, iCloud Drive, or an external drive")
-                    bullet("desktopcomputer", "Send a YouTube link from anywhere — your Mac downloads it and hands it over on Wi-Fi")
+                    bullet("play.rectangle.on.rectangle", "Search YouTube and download straight to this iPhone — no Mac, no account, no cable")
                     bullet("lock.iphone", "Audio keeps playing with the screen off")
                 }
                 .padding(.horizontal, 34)

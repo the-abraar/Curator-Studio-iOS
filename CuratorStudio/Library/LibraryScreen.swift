@@ -54,7 +54,7 @@ struct LibraryScreen: View {
                         EmptyStateView(
                             symbol: "tray",
                             title: "This folder is empty",
-                            message: "Copy videos or audio into “\(root.name)” from your Mac, then pull to refresh."
+                            message: "Download something from the YouTube tab, or copy videos and audio into “\(root.name)” with Files."
                         )
                         .listRowBackground(Color.clear)
                     }
@@ -85,7 +85,7 @@ struct LibraryScreen: View {
                 if root.skippedFileCount > 0 {
                     Section {
                         Label(
-                            "\(root.skippedFileCount) file\(root.skippedFileCount == 1 ? "" : "s") skipped — iOS can't decode formats like MKV, AVI or WEBM. Convert them to MP4 on your Mac.",
+                            "\(root.skippedFileCount) file\(root.skippedFileCount == 1 ? "" : "s") skipped — iOS can't decode formats like MKV, AVI or WEBM. Convert them to MP4 before copying them in.",
                             systemImage: "exclamationmark.triangle"
                         )
                         .font(.footnote)
