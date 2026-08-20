@@ -58,6 +58,9 @@ final class DownloadManager: ObservableObject {
 
     /// Details fetched while resolving, kept for the sidecar and for tagging.
     private var resolvedDetails: [String: VideoDetails] = [:]
+    /// Progress is written to disk now and then, so a job picked up by a fresh launch shows what
+    /// it actually reached rather than whatever it was at when a stage last changed.
+    private var lastProgressSave = Date.distantPast
     private var sponsorSegments: [String: [SponsorSegment]] = [:]
     private var assembling: Set<String> = []
 
@@ -96,19 +99,24 @@ final class DownloadManager: ObservableObject {
     func resume() async {
         fetcher.reconnect()
         let live = await fetcher.liveJobIDs()
+        Log.downloads.notice("resume: \(self.jobs.count) jobs, \(self.activeJobs.count) active, live=\(live.count)")
 
-        for index in jobs.indices {
+        for jobID in jobs.map(\.id) {
+            guard let index = jobIndex(of: jobID) else { continue }
             let job = jobs[index]
             guard job.stage.isActive else { continue }
 
             switch job.stage {
             case .downloading where live.contains(job.id):
                 continue                                  // still going, nothing to do
-            case .downloading:
-                // A part only counts as done if the fetcher said so before we were killed — a file
-                // left in staging may be a half-finished run of chunks.
-                if job.hasAllParts {
-                    await finish(jobID: job.id)
+            case .downloading, .assembling, .importing:
+                // Staged parts survive until the finished file is safely in the library, so a merge
+                // the app was killed in the middle of carries on from what is on disk instead of
+                // pulling the whole video down a second time. A part only counts as done if the
+                // fetcher said so before we were killed *and* the file is still there — anything
+                // else may be half a run of chunks, so it starts over.
+                if job.hasAllParts, Self.stagedPartsExist(for: job) {
+                    Task { await self.resumeAssembly(jobID: job.id) }
                 } else {
                     StreamFetcher.clearStaging(jobID: job.id)
                     jobs[index].stagedFiles = [:]
@@ -116,7 +124,7 @@ final class DownloadManager: ObservableObject {
                     jobs[index].receivedBytes = 0
                     jobs[index].stage = .queued            // start the interrupted parts over
                 }
-            case .assembling, .importing, .resolving:
+            case .resolving:
                 jobs[index].stage = .queued
             default:
                 break
@@ -124,6 +132,32 @@ final class DownloadManager: ObservableObject {
         }
         save()
         pump()
+    }
+
+    private static func stagedPartsExist(for job: DownloadJob) -> Bool {
+        !job.expectedParts.isEmpty && job.expectedParts.allSatisfy {
+            FileManager.default.fileExists(atPath: StreamFetcher.stagedURL(jobID: job.id, part: $0).path)
+        }
+    }
+
+    /// Picks a job back up at the merge, re-fetching the context that only ever lived in memory:
+    /// the sponsor segments to cut and the details that go into the tags and the sidecar. Both are
+    /// best effort — neither is worth re-downloading a few hundred megabytes for.
+    private func resumeAssembly(jobID: String) async {
+        guard let index = jobIndex(of: jobID) else { return }
+        let job = jobs[index]
+
+        if sponsorBlockEnabled, sponsorSegments[job.id] == nil {
+            sponsorSegments[job.id] = await SponsorBlock.segments(
+                for: job.videoId, categories: sponsorBlockCategories
+            )
+        }
+        if resolvedDetails[job.videoId] == nil {
+            resolvedDetails[job.videoId] = try? await youtube.streamDetails(
+                videoId: job.videoId, includeRelated: false
+            )
+        }
+        await finish(jobID: jobID)
     }
 
     // MARK: Enqueuing
@@ -197,6 +231,7 @@ final class DownloadManager: ObservableObject {
     }
 
     private func add(_ job: DownloadJob, pumpAfter: Bool = true) {
+        Log.downloads.notice("enqueued \(job.title) [\(job.id)] \(job.quality.rawValue) → \(job.folder)")
         jobs.insert(job, at: 0)
         save()
         if pumpAfter { pump() }
@@ -270,6 +305,7 @@ final class DownloadManager: ObservableObject {
         jobs[index].stage = .resolving
         jobs[index].errorMessage = nil
         save()
+        Log.downloads.notice("resolving \(self.jobs[index].videoId) [\(jobID)]")
 
         let job = jobs[index]
 
@@ -308,6 +344,7 @@ final class DownloadManager: ObservableObject {
             jobs[liveIndex].durationSeconds = details.lengthSeconds
             jobs[liveIndex].stage = .downloading
             save()
+            Log.downloads.notice("downloading [\(jobID)] parts=\(parts.map { "\($0.role.rawValue):itag\($0.format.itag):\($0.format.contentLength ?? -1)" }.joined(separator: ",")) total=\(selection.expectedBytes)")
 
             for part in parts {
                 fetcher.start(
@@ -351,6 +388,7 @@ final class DownloadManager: ObservableObject {
         job.stage = .assembling
         jobs[index] = job
         save()
+        Log.downloads.notice("assembling [\(jobID)] parts=\(job.expectedParts.map(\.rawValue).joined(separator: ",")) audioOnly=\(job.quality.isAudioOnly)")
 
         let files = job.expectedParts.map { StreamFetcher.stagedURL(jobID: job.id, part: $0) }
         let details = resolvedDetails[job.videoId]
@@ -380,12 +418,17 @@ final class DownloadManager: ObservableObject {
                 return
             }
 
-            guard let importIndex = jobIndex(of: jobID) else { return }
+            guard let importIndex = jobIndex(of: jobID) else {
+                Log.downloads.error("job vanished before import [\(jobID)]")
+                return
+            }
             jobs[importIndex].stage = .importing
             save()
 
             let filename = job.filename(extension: audioOnly ? "m4a" : "mp4")
+            Log.downloads.notice("importing [\(jobID)] \(filename) → \(job.folder)")
             let relative = try library.adoptFile(at: output.url, folder: job.folder, filename: filename)
+            Log.downloads.notice("imported [\(jobID)] at \(relative)")
 
             if writeSidecar {
                 writeSidecarFile(for: job, relativePath: relative, details: details, segments: segments)
@@ -405,6 +448,7 @@ final class DownloadManager: ObservableObject {
             recentlyImported.insert(relative, at: 0)
             recentlyImported = Array(recentlyImported.prefix(20))
             await library.rescan()
+            Log.downloads.notice("done [\(jobID)] library now has \(library.allItems.count) items")
 
             let where_ = job.folder.isEmpty ? "your library" : job.folder
             lastMessage = output.trimmedSeconds > 1
@@ -444,7 +488,11 @@ final class DownloadManager: ObservableObject {
     private static let autoRetryDelay: TimeInterval = 10 * 60
 
     private func fail(jobID: String, message: String, retryable: Bool = false) {
+        Log.downloads.error("failed [\(jobID)] retryable=\(retryable) \(message)")
         guard let index = jobIndex(of: jobID) else { return }
+        // The other half of an adaptive pair is usually still in flight. Left running it appends
+        // into staging that is about to be deleted, and then fights with the retry that follows.
+        fetcher.cancel(jobID: jobID)
         StreamFetcher.clearStaging(jobID: jobID)
         jobs[index].stagedFiles = [:]
         jobs[index].partProgress = [:]
@@ -498,17 +546,42 @@ extension DownloadManager: StreamFetcherDelegate {
             let known = job.partTotals.values.reduce(0, +)
             if known > job.totalBytes { job.totalBytes = known }
             self.jobs[index] = job
+
+            if Date().timeIntervalSince(self.lastProgressSave) > 5 {
+                self.lastProgressSave = Date()
+                self.save()
+            }
         }
     }
 
     nonisolated func fetcher(didFinish jobID: String, part: DownloadJob.Part, at url: URL) {
         Task { @MainActor in
             guard let index = self.jobIndex(of: jobID) else { return }
+            Log.downloads.notice("part finished [\(jobID)] \(part.rawValue)")
             self.jobs[index].stagedFiles[part] = url.lastPathComponent
             self.save()
             if self.jobs[index].hasAllParts {
                 await self.finish(jobID: jobID)
             }
+        }
+    }
+
+    /// The app was replaced while this part was downloading, so the chunk loop that knew where it
+    /// had got to is gone. Nothing can be resumed from here — but leaving the job alone is what
+    /// stranded it at "Downloading" with no error and no file, so put it back in the queue.
+    nonisolated func fetcherLostTransfer(jobID: String, part: DownloadJob.Part) {
+        Log.downloads.error("lost transfer [\(jobID)] \(part.rawValue) — requeueing")
+        Task { @MainActor in
+            guard let index = self.jobIndex(of: jobID),
+                  self.jobs[index].stage == .downloading else { return }
+            self.fetcher.cancel(jobID: jobID)
+            StreamFetcher.clearStaging(jobID: jobID)
+            self.jobs[index].stagedFiles = [:]
+            self.jobs[index].partProgress = [:]
+            self.jobs[index].receivedBytes = 0
+            self.jobs[index].stage = .queued
+            self.save()
+            self.pump()
         }
     }
 
@@ -534,8 +607,12 @@ extension DownloadManager: StreamFetcherDelegate {
         else { return nil }
 
         await MainActor.run { self.resolvedDetails[videoId] = details }
-        return await MainActor.run { DownloadManager.parts(of: selection) }
+        let fresh = await MainActor.run { DownloadManager.parts(of: selection) }
             .first { $0.role == part }?.format.url
+        if let fresh {
+            Log.downloads.notice("fresh URL [\(jobID)] \(part.rawValue) signedFor=\(StreamFetcher.signedIP(of: fresh))")
+        }
+        return fresh
     }
 
     private static func friendly(_ error: Error) -> String {

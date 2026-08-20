@@ -63,16 +63,30 @@ struct SettingsScreen: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    if downloads.badgeCount > 0 {
-                        Label("\(downloads.badgeCount) download\(downloads.badgeCount == 1 ? "" : "s") running",
-                              systemImage: "arrow.down.circle.dotted")
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.accent)
+                    ForEach(downloads.activeJobs.prefix(Self.maxQueueRows)) { job in
+                        QueueProgressRow(job: job)
+                    }
+                    if downloads.activeJobs.count > Self.maxQueueRows {
+                        Text("+ \(downloads.activeJobs.count - Self.maxQueueRows) more in the queue")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    NavigationLink {
+                        DownloadsScreen()
+                    } label: {
+                        HStack {
+                            Label("All downloads", systemImage: "arrow.down.circle.dotted")
+                            Spacer()
+                            Text(queueSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 } header: {
                     Text("Downloads")
                 } footer: {
-                    Text("Quality, SponsorBlock and tagging for videos you pull down from the YouTube tab. Everything happens on this iPhone.")
+                    Text("Quality, SponsorBlock and tagging for videos you pull down from the YouTube tab. Everything happens on this iPhone. Transfers keep running while you're on another tab — merging and filing finish whenever the app is open.")
                 }
 
                 Section {
@@ -134,6 +148,64 @@ struct SettingsScreen: View {
                 Text("Resume positions, stars, watched marks and bookmarks will all be cleared. Your files are not touched.")
             }
         }
+    }
+
+    /// How many of the queue to show inline before it stops being a settings screen.
+    private static let maxQueueRows = 4
+
+    /// "2 running · 5 waiting" — the state of the queue without having to open it.
+    private var queueSummary: String {
+        let active = downloads.activeJobs
+        guard !active.isEmpty else { return "Nothing queued" }
+        let waiting = active.filter { $0.stage == .queued }.count
+        let running = active.count - waiting
+        var parts: [String] = []
+        if running > 0 { parts.append("\(running) running") }
+        if waiting > 0 { parts.append("\(waiting) waiting") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// One line of the queue as it looks in Settings: what it is and how far along, and nothing more.
+/// The full row — destination folder, swipe to cancel or retry — stays on `DownloadsScreen`.
+private struct QueueProgressRow: View {
+
+    let job: DownloadJob
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Image(systemName: job.stage.symbol)
+                    .font(.caption)
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 16)
+
+                Text(job.title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                // A queued job has no progress to report yet, and "0%" reads like a stall.
+                if job.stage != .queued {
+                    Text("\(Int(job.fraction * 100))%")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ProgressPill(fraction: job.fraction)
+
+            HStack(spacing: 5) {
+                Text(job.stage.label)
+                if job.stage == .downloading, job.totalBytes > 0 {
+                    Text("· \(Fmt.fileSize(job.receivedBytes)) of \(Fmt.fileSize(job.totalBytes))")
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
     }
 }
 

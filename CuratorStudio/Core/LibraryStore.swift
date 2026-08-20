@@ -65,6 +65,7 @@ final class LibraryStore: ObservableObject {
     private func adopt(url: URL, persist: Bool) async throws {
         stopAccess()
         isAccessing = url.startAccessingSecurityScopedResource()
+        Log.library.notice("root \(url.path) scoped=\(self.isAccessing)")
         rootURL = url
         rootDisplayName = url.lastPathComponent
         hasRoot = true
@@ -97,6 +98,7 @@ final class LibraryStore: ObservableObject {
         }.value
         root = scanned
         isScanning = false
+        Log.library.notice("scanned \(rootURL.path): \(scanned?.deepItemCount ?? -1) items")
         if let scanned, scanned.deepItemCount == 0 {
             errorMessage = "No playable files found in “\(scanned.name)”. Download something from the YouTube tab, or copy files in with Files, then pull to refresh."
         }
@@ -180,7 +182,13 @@ final class LibraryStore: ObservableObject {
             counter += 1
         }
 
-        try fm.moveItem(at: temporaryURL, to: candidate)
+        do {
+            try fm.moveItem(at: temporaryURL, to: candidate)
+        } catch {
+            Log.library.error("move failed → \(candidate.path): \(error.localizedDescription)")
+            throw error
+        }
+        Log.library.notice("filed \(candidate.path)")
 
         let relative = cleanFolder.isEmpty
             ? candidate.lastPathComponent

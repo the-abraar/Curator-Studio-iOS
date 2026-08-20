@@ -45,7 +45,13 @@ struct CuratorStudioApp: App {
                 states.saveNow()
             case .active:
                 AudioSessionManager.activate()
-                Task { await downloads.resume() }
+                Task {
+                    await downloads.resume()
+                    // Files may have arrived while we were away — a transfer that finished in the
+                    // background, or something copied in with the Files app — so the library is
+                    // re-read on the way back in rather than only when a download lands.
+                    await library.rescan()
+                }
             default:
                 break
             }
