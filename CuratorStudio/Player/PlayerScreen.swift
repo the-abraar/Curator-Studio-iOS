@@ -110,14 +110,17 @@ struct PlayerScreen: View {
     }
 
     private var topBar: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 2) {
             Button {
                 dismiss()
                 player.isPresentingPlayer = false
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.title3.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(player.current?.displayName ?? "")
@@ -136,7 +139,10 @@ struct PlayerScreen: View {
                     states.toggleFavorite(path)
                 } label: {
                     Image(systemName: states.state(for: path).favorite ? "star.fill" : "star")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
 
             Menu {
@@ -167,34 +173,49 @@ struct PlayerScreen: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.title3)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
         }
         .foregroundStyle(.white)
     }
 
     private var centerTransport: some View {
-        HStack(spacing: 40) {
+        HStack(spacing: 20) {
             Button { player.playPrevious() } label: {
                 Image(systemName: "backward.end.fill").font(.title2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .disabled(!player.canGoPrevious)
 
             Button { player.skip(by: -10) } label: {
-                Image(systemName: "gobackward.10").font(.system(size: 34))
+                Image(systemName: "gobackward.10").font(.system(size: 30))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
             Button { player.togglePlayPause() } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 66))
             }
+            .buttonStyle(.plain)
 
             Button { player.skip(by: 10) } label: {
-                Image(systemName: "goforward.10").font(.system(size: 34))
+                Image(systemName: "goforward.10").font(.system(size: 30))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
             Button { player.playNext() } label: {
                 Image(systemName: "forward.end.fill").font(.title2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .disabled(!player.canGoNext)
         }
         .foregroundStyle(.white)
@@ -220,7 +241,7 @@ struct PlayerScreen: View {
                 Spacer(minLength: 0)
 
                 AirPlayButton()
-                    .frame(width: 34, height: 34)
+                    .frame(width: 44, height: 44)
             }
         }
     }

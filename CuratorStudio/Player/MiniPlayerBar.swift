@@ -40,18 +40,23 @@ struct MiniPlayerBar: View {
 
                     Button { player.skip(by: -10) } label: {
                         Image(systemName: "gobackward.10").font(.title3)
+                            .frame(width: 40, height: 40)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
 
                     Button { player.togglePlayPause() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                             .font(.title3)
-                            .frame(width: 26)
+                            .frame(width: 40, height: 40)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
 
                     Button { player.playNext() } label: {
                         Image(systemName: "forward.end.fill").font(.subheadline)
+                            .frame(width: 40, height: 40)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(!player.canGoNext)

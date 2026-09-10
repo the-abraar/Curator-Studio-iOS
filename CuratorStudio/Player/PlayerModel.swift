@@ -140,7 +140,9 @@ final class PlayerModel: NSObject, ObservableObject {
         queueTitle = title
         queueIndex = queue.firstIndex(of: item) ?? 0
         rebuildShuffle()
-        load(at: queueIndex, autoplay: true)
+        // A deliberate open of one item (Continue Listening, a library tap, a
+        // search result) — pick up where that specific file left off.
+        load(at: queueIndex, autoplay: true, resume: true)
         isPresentingPlayer = true
     }
 
@@ -150,7 +152,9 @@ final class PlayerModel: NSObject, ObservableObject {
         queueTitle = title
         queueIndex = min(max(index, 0), items.count - 1)
         rebuildShuffle()
-        load(at: queueIndex, autoplay: true)
+        // Playlist/queue playback: every item starts from the top, even if
+        // it was partway through from some earlier, unrelated listen.
+        load(at: queueIndex, autoplay: true, resume: false)
         isPresentingPlayer = true
     }
 
@@ -170,7 +174,9 @@ final class PlayerModel: NSObject, ObservableObject {
             return
         }
         queueIndex = next
-        load(at: next, autoplay: true)
+        // Advancing through a queue always starts the next item fresh —
+        // never resumes wherever that file happened to stop last time.
+        load(at: next, autoplay: true, resume: false)
     }
 
     func playPrevious() {
@@ -186,7 +192,7 @@ final class PlayerModel: NSObject, ObservableObject {
             return
         }
         queueIndex = previous
-        load(at: previous, autoplay: true)
+        load(at: previous, autoplay: true, resume: false)
     }
 
     private func nextIndex() -> Int? {
@@ -233,7 +239,7 @@ final class PlayerModel: NSObject, ObservableObject {
 
     // MARK: Loading
 
-    private func load(at index: Int, autoplay: Bool) {
+    private func load(at index: Int, autoplay: Bool, resume: Bool) {
         guard queue.indices.contains(index), let library else { return }
         let item = queue[index]
         guard let url = library.url(for: item) else {
@@ -259,10 +265,10 @@ final class PlayerModel: NSObject, ObservableObject {
         let playerItem = AVPlayerItem(asset: asset)
         playerItem.audioTimePitchAlgorithm = preservePitchWhenChangingSpeed ? .spectral : .varispeed
 
-        replace(with: playerItem, item: item, asset: asset, autoplay: autoplay)
+        replace(with: playerItem, item: item, asset: asset, autoplay: autoplay, resume: resume)
     }
 
-    private func replace(with playerItem: AVPlayerItem, item: MediaItem, asset: AVURLAsset, autoplay: Bool) {
+    private func replace(with playerItem: AVPlayerItem, item: MediaItem, asset: AVURLAsset, autoplay: Bool, resume: Bool) {
         isBuffering = true
         player.replaceCurrentItem(with: playerItem)
         observe(playerItem)
@@ -289,9 +295,11 @@ final class PlayerModel: NSObject, ObservableObject {
                 self.pitch.fineCents = Float(self.fineCents)
 
                 await MainActor.run {
-                    let resume = self.states.resumePosition(for: item.relativePath)
-                    if resume > 1 {
-                        self.seek(to: resume)
+                    if resume {
+                        let resumeAt = self.states.resumePosition(for: item.relativePath)
+                        if resumeAt > 1 {
+                            self.seek(to: resumeAt)
+                        }
                     }
                     self.applySpeed()
                     if autoplay { self.play() }
