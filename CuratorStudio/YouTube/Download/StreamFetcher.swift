@@ -345,7 +345,9 @@ final class StreamFetcher: NSObject {
 
         Task { [weak self] in
             guard let self else { return }
-            let backoff = UInt64(1_000_000_000) << UInt64(min(transfer.failures - 1, 4))
+            // Capped at 32s rather than 16s: a refusal here reads as "asking too often", and the
+            // whole point of backing off is to let whatever window that is measured over lapse.
+            let backoff = UInt64(1_000_000_000) << UInt64(min(transfer.failures - 1, 5))
             try? await Task.sleep(nanoseconds: backoff)
 
             // Every second attempt, assume the URL itself is spent and get a new one.

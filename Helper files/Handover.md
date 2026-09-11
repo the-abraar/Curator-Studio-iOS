@@ -1,11 +1,29 @@
 # Handover — downloads that never land
 
-**Status: open.** As of 2026-08-20 no download has yet reached the library. Several
+**Status: open.** As of 2026-09-11 no download has yet reached the library. Several
 real bugs were found and fixed along the way; the one still standing is in the last
 section, along with the decision it needs.
 
 Everything below was verified against the live service or read out of the phone's
 own log. Where something is still a theory it says so.
+
+**2026-09-11 update:** the IP-rotation theory below is now disproven by fresh
+evidence — see *"2026-09-11: the IP-rotation theory is dead"* further down for
+what actually happened, what was ruled out this round, and what's left standing.
+Playback was also reported broken this session ("loads but never starts") — that
+one's understood, see the note right after this paragraph.
+
+## Playback doesn't start (separate from downloads, same underlying cause)
+
+`VideoScreen.swift` hands `AVPlayer` a single progressive (muxed video+audio)
+stream URL directly (`VideoDetails.streamableURL` in `Models.swift`, itag 18/22).
+This was already tested live before today and is in the *Ruled out* table: **muxed
+progressive itag 18 gets refused 403 on the very first chunk, always, for this
+client.** So playback gets metadata (title, thumbnail — hence "it loads") but the
+actual media request is refused immediately and `AVPlayer` buffers forever. This
+is a dead end as built, not a transient bug, and there is currently no logging on
+the playback path at all (`Log` is only wired into the download path) — so if this
+gets picked up, instrument `VideoScreen.load()` before doing anything else.
 
 ---
 
@@ -58,7 +76,7 @@ Each was tested against the live service, not reasoned about.
 
 ---
 
-## The open fault: URLs are signed for the requesting IP
+## The original open fault (2026-08-20): URLs are signed for the requesting IP — DISPROVEN 2026-09-11
 
 Every googlevideo URL carries `ip=<public IP>` **inside its signed parameter list**:
 
@@ -78,39 +96,69 @@ which buys exactly one more chunk. From the device log:
 19:42:29.265  response video code=403 at=2621440/9612434    ← and refused again
 ```
 
-**Hypothesis:** the phone's public address moves between requests — carrier NAT
-handing out a different egress IP per connection, or the `/player` call (foreground
-`URLSession.shared`) and the media transfers (background session, run by the
-`nsurlsessiond` daemon) leaving on different interfaces. A URL signed for address A
-is refused the moment a request arrives from address B.
+The hypothesis at the time was that the phone's public address moves between
+requests. **This is now ruled out — see below.**
 
-**Not yet proven.** The build on the phone right now logs the two things that settle it:
+---
 
-- `signedFor=<ip>` at every extraction and re-extraction (`StreamFetcher.swift:399`,
-  `DownloadManager.swift:613`). If that value changes between two calls seconds
-  apart, the public IP is rotating and the hypothesis is confirmed.
-- Per-request connection metrics (`StreamFetcher.swift:509`): `cellular=`, `proxy=`,
-  `reused=`, local and remote address, protocol. Shows whether media requests leave
-  on a different interface than the API calls.
+## 2026-09-11: the IP-rotation theory is dead. Here's what a live retest found instead.
 
-**Next step: run one download, pull the log, read those two lines.**
+Pulled a fresh `diagnostics.log` from a real download attempt on the phone.
+`signedFor=110.76.128.191` was **identical** across the initial extraction and two
+later mid-download re-extractions, several seconds apart. The phone's public IP is
+not rotating. That kills the theory above outright.
 
-### If it is confirmed
+What the same log actually shows is **flaky, not permanent**, refusals: the exact
+same URL and byte offset can 403 and then 206 on a bare retry two seconds later,
+with nothing else changed:
 
-The fix is structural, not another header. Options, worst to best understood:
+```
+04:08:27.247  video 403 at=2097152   ← fails
+04:08:29.305  video 206 at=2097152   ← same offset, same URL, succeeds 2s later
+```
 
-1. **Download in-process instead of via the background session**, so extraction and
-   transfer share one connection pool and NAT mapping. Costs the stated design goal
-   — "transfers keep going when you leave the app" — and doesn't help if the carrier
-   rotates IP per connection regardless.
-2. **Re-extract per chunk.** Correct-ish but absurd: a `/player` round trip per 2 MB,
-   and still no guarantee the two sessions share an egress IP.
-3. **Pin the network interface** (`allowsCellularAccess = false` to force Wi-Fi).
-   Cheap to try, worth measuring — but it makes cellular downloads impossible.
-4. **Ask for the biggest range the service allows** (~3 MB) to minimise the number of
-   coin flips. Mitigation, not a fix.
+### Tried and ruled out this round
 
-Option 1 vs 3 is a product decision, not a technical one. Ask before building.
+| Theory | Test | Verdict |
+|---|---|---|
+| Concurrent video+audio transfers compete/throttle each other | Serialized the two parts (`DownloadManager.swift` — `pendingParts` / `startNextPart`, one part at a time instead of both firing at once) and re-ran on device | **Wrong.** A single, unaccompanied video stream hit the identical wall |
+| Retry budget too stingy, gives up before a transient refusal clears | Extended backoff ceiling 16s → 32s (`StreamFetcher.swift` retry loop) | Made no difference — the failure isn't about backoff length, see below |
+| Wrong Innertube client identity for extraction (`ANDROID_VR`) | Wrote `client-probe.py`, ran the same extraction with `ANDROID_VR` from a **stable Mac connection**: 6 clean 2 MB chunks (12 MB) before any refusal — 4x further than the phone ever gets. `IOS`/`ANDROID` client payloads attempted too but got HTTP 400 (bad request shape, not investigated further since ANDROID_VR already proved not to be the bottleneck); `TVHTML5` came back `UNPLAYABLE` (needs a proof-of-origin token this app doesn't have) | **Wrong.** The client already in use works fine; it's not the limiting factor |
+| Force HTTP/1.1, avoid the mid-transfer upgrade to HTTP/3 seen in the connection metrics | Checked the actual SDK header (`NSURLRequest.h`): the only public lever, `assumesHTTP3Capable`, only controls *speculative* H3 racing before the server confirms support, and **already defaults to `NO`**. There is no public iOS API to block the normal Alt-Svc-driven upgrade once a server advertises H3. Nothing to change or test | **Not implementable**, not merely untested |
+
+### What's actually left standing
+
+The phone reaches roughly **3 MB** into a stream before the wall becomes
+unrecoverable (two independent restart-from-zero attempts, same session, both
+stalled at exactly byte 3,145,728). The Mac, on the same client, same video, same
+extraction method, reaches **12 MB**. Same request pattern, wildly different
+outcome — so whatever is refusing these requests is reading something about the
+*connection itself* (the phone's specific network path), not the client identity,
+not concurrency, and not the signed IP.
+
+Concretely testable next steps, in roughly cheapest-to-most-invasive order:
+
+1. **Wi-Fi-only** (`allowsCellularAccess = false`). Low expectation — the phone's
+   own connection logs already show `cellular=false` throughout, so it's already on
+   Wi-Fi. Worth ruling out formally anyway since it's a one-line change.
+2. **One persistent streamed connection** instead of discrete `Range`-chunked
+   requests — i.e. actually behave like a real player pulling one continuous
+   response rather than a chunk loop issuing a fresh request every 512KB–2MB. This
+   is a materially different `StreamFetcher` design, not a tweak, and hasn't been
+   tried at all yet.
+3. The original options 1 and 2 from the superseded section above (in-process
+   download sharing one connection pool; re-extract per chunk) are worth
+   re-examining now that the *reason* they might help is different — not IP
+   rotation, but whatever is specific to backgrounded/`nsurlsessiond`-managed
+   transfers on this network path.
+
+Also fixed and kept regardless of whether they turn out to matter: parts now
+download serialized rather than racing (`DownloadManager.swift`), and the retry
+backoff ceiling is 32s instead of 16s (`StreamFetcher.swift`). Neither is harmful;
+neither was sufficient on its own.
+
+Option 2 above (or resurrecting original options 1/2) is a product decision, not a
+technical one. Ask before building.
 
 ---
 
@@ -148,6 +196,14 @@ xcrun devicectl device copy from --device <DEVICE> \
 `Helper files/googlevideo-probe.py` does an `ANDROID_VR` extraction from the Mac and
 fires range requests at the result — the fastest way to test a theory about the
 service without a build/install/launch cycle. `python3 "Helper files/googlevideo-probe.py" <videoId>`.
+
+`Helper files/client-probe.py` (added 2026-09-11) does the same but across several
+Innertube client identities, and walks further into the file (up to 24 MB in 2 MB
+steps) to compare how far each gets before being refused. `IOS` and `ANDROID` in
+there currently 400 — their payload shape needs fixing before they say anything
+useful. `TVHTML5` reaches the endpoint fine but comes back `UNPLAYABLE` (needs a
+proof-of-origin token). Only `ANDROID_VR` actually returns a working stream right
+now. `python3 "Helper files/client-probe.py" <videoId>`.
 
 ### Notes for whoever picks this up
 

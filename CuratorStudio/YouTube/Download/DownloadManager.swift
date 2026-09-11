@@ -63,6 +63,10 @@ final class DownloadManager: ObservableObject {
     private var lastProgressSave = Date.distantPast
     private var sponsorSegments: [String: [SponsorSegment]] = [:]
     private var assembling: Set<String> = []
+    /// Parts not yet handed to the fetcher. Video and audio used to start together, but googlevideo
+    /// reads that as one client asking twice as often and 403s harder for it — so a job's parts now
+    /// run one at a time, and this is where the not-yet-started ones wait.
+    private var pendingParts: [String: [(role: DownloadJob.Part, format: StreamFormat)]] = [:]
 
     private static let stateURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -242,6 +246,7 @@ final class DownloadManager: ObservableObject {
     func retry(_ job: DownloadJob) {
         guard let index = jobIndex(of: job.id) else { return }
         StreamFetcher.clearStaging(jobID: job.id)
+        pendingParts[job.id] = nil
         jobs[index].stage = .queued
         jobs[index].errorMessage = nil
         jobs[index].receivedBytes = 0
@@ -256,6 +261,7 @@ final class DownloadManager: ObservableObject {
         guard let index = jobIndex(of: job.id) else { return }
         fetcher.cancel(jobID: job.id)
         StreamFetcher.clearStaging(jobID: job.id)
+        pendingParts[job.id] = nil
         jobs[index].stage = .cancelled
         save()
         pump()
@@ -264,6 +270,7 @@ final class DownloadManager: ObservableObject {
     func remove(_ job: DownloadJob) {
         fetcher.cancel(jobID: job.id)
         StreamFetcher.clearStaging(jobID: job.id)
+        pendingParts[job.id] = nil
         jobs.removeAll { $0.id == job.id }
         save()
         pump()
@@ -346,15 +353,23 @@ final class DownloadManager: ObservableObject {
             save()
             Log.downloads.notice("downloading [\(jobID)] parts=\(parts.map { "\($0.role.rawValue):itag\($0.format.itag):\($0.format.contentLength ?? -1)" }.joined(separator: ",")) total=\(selection.expectedBytes)")
 
-            for part in parts {
-                fetcher.start(
-                    jobID: jobID, part: part.role, url: part.format.url,
-                    expectedBytes: part.format.contentLength ?? 0
-                )
-            }
+            pendingParts[jobID] = parts
+            startNextPart(jobID: jobID)
         } catch {
             fail(jobID: jobID, message: error.localizedDescription)
         }
+    }
+
+    /// Hands the next not-yet-started part to the fetcher, if any remain. Parts run one at a time —
+    /// see `pendingParts`.
+    private func startNextPart(jobID: String) {
+        guard var remaining = pendingParts[jobID], !remaining.isEmpty else { return }
+        let next = remaining.removeFirst()
+        pendingParts[jobID] = remaining.isEmpty ? nil : remaining
+        fetcher.start(
+            jobID: jobID, part: next.role, url: next.format.url,
+            expectedBytes: next.format.contentLength ?? 0
+        )
     }
 
     /// Which file goes in which slot. An audio-only download and a muxed fallback both produce a
@@ -494,6 +509,7 @@ final class DownloadManager: ObservableObject {
         // into staging that is about to be deleted, and then fights with the retry that follows.
         fetcher.cancel(jobID: jobID)
         StreamFetcher.clearStaging(jobID: jobID)
+        pendingParts[jobID] = nil
         jobs[index].stagedFiles = [:]
         jobs[index].partProgress = [:]
         jobs[index].receivedBytes = 0
@@ -562,6 +578,8 @@ extension DownloadManager: StreamFetcherDelegate {
             self.save()
             if self.jobs[index].hasAllParts {
                 await self.finish(jobID: jobID)
+            } else {
+                self.startNextPart(jobID: jobID)
             }
         }
     }
