@@ -86,6 +86,12 @@ def fetch(url, byte_range, ua):
 
 def main():
     video_id = sys.argv[1] if len(sys.argv) > 1 else "El6B0gKoo-A"
+    # Pin one itag across every client tested. The byte cap where googlevideo starts
+    # refusing scales with a format's bitrate (see Handover.md, 2026-09-11 round 2/3) — comparing
+    # two clients that silently landed on different itags looks exactly like a real difference
+    # between them and isn't one. 135 (480p avc1) is a safe default: small enough to hit its wall
+    # in a few requests, common enough that every client should offer it.
+    target_itag = int(sys.argv[2]) if len(sys.argv) > 2 else 135
     vd = visitor_data()
 
     for name, spec in CLIENTS.items():
@@ -104,7 +110,12 @@ def main():
 
         streaming = data.get("streamingData", {})
         adaptive = streaming.get("adaptiveFormats", [])
-        video = next((f for f in adaptive if "avc1" in f.get("mimeType", "") and f.get("url")), None)
+        video = next((f for f in adaptive if f.get("itag") == target_itag and f.get("url")), None)
+        if not video:
+            video = next((f for f in adaptive if "avc1" in f.get("mimeType", "") and f.get("url")), None)
+            if video:
+                print(f"  itag {target_itag} not offered by this client — falling back to "
+                      f"itag {video['itag']}; byte-cap comparisons against other clients are NOT valid")
         if not video:
             print("  no direct-url avc1 adaptive format (ciphered signature?)")
             continue

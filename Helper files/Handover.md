@@ -126,39 +126,76 @@ with nothing else changed:
 | Wrong Innertube client identity for extraction (`ANDROID_VR`) | Wrote `client-probe.py`, ran the same extraction with `ANDROID_VR` from a **stable Mac connection**: 6 clean 2 MB chunks (12 MB) before any refusal — 4x further than the phone ever gets. `IOS`/`ANDROID` client payloads attempted too but got HTTP 400 (bad request shape, not investigated further since ANDROID_VR already proved not to be the bottleneck); `TVHTML5` came back `UNPLAYABLE` (needs a proof-of-origin token this app doesn't have) | **Wrong.** The client already in use works fine; it's not the limiting factor |
 | Force HTTP/1.1, avoid the mid-transfer upgrade to HTTP/3 seen in the connection metrics | Checked the actual SDK header (`NSURLRequest.h`): the only public lever, `assumesHTTP3Capable`, only controls *speculative* H3 racing before the server confirms support, and **already defaults to `NO`**. There is no public iOS API to block the normal Alt-Svc-driven upgrade once a server advertises H3. Nothing to change or test | **Not implementable**, not merely untested |
 
-### What's actually left standing
+### CORRECTION — the "Mac reaches 12MB, phone reaches 3MB" finding above was an artifact
 
-The phone reaches roughly **3 MB** into a stream before the wall becomes
-unrecoverable (two independent restart-from-zero attempts, same session, both
-stalled at exactly byte 3,145,728). The Mac, on the same client, same video, same
-extraction method, reaches **12 MB**. Same request pattern, wildly different
-outcome — so whatever is refusing these requests is reading something about the
-*connection itself* (the phone's specific network path), not the client identity,
-not concurrency, and not the signed IP.
+That comparison used **two different formats without realizing it**: the phone's
+download job requested itag 135 (480p), while the Mac's `client-probe.py` test
+picked whatever "first avc1 adaptive format" it found, which was itag 137 (1080p).
+Once re-tested on the same itag, the Mac gets refused at **exactly the same byte
+offset the phone does.** Device, network path, background-vs-foreground session —
+none of it matters. See the two rounds of testing below for what was actually
+learned once this was caught.
 
-Concretely testable next steps, in roughly cheapest-to-most-invasive order:
+### Round 2 — HTTP/3, tested properly and disproven
 
-1. **Wi-Fi-only** (`allowsCellularAccess = false`). Low expectation — the phone's
-   own connection logs already show `cellular=false` throughout, so it's already on
-   Wi-Fi. Worth ruling out formally anyway since it's a one-line change.
-2. **One persistent streamed connection** instead of discrete `Range`-chunked
-   requests — i.e. actually behave like a real player pulling one continuous
-   response rather than a chunk loop issuing a fresh request every 512KB–2MB. This
-   is a materially different `StreamFetcher` design, not a tweak, and hasn't been
-   tried at all yet.
-3. The original options 1 and 2 from the superseded section above (in-process
-   download sharing one connection pool; re-extract per chunk) are worth
-   re-examining now that the *reason* they might help is different — not IP
-   rotation, but whatever is specific to backgrounded/`nsurlsessiond`-managed
-   transfers on this network path.
+Hypothesis: `URLSession` auto-upgrades to HTTP/3 (confirmed via
+`URLSessionTaskMetrics`, `proto=h3` on the very first request against
+`rr2---sn-3noxufvg3-q5js.googlevideo.com`), and that upgrade is what breaks range
+requests after the first chunk. Built a from-scratch HTTP/1.1-only fetcher
+(`NWConnection` + TCP, TLS ALPN restricted to `http/1.1` via
+`sec_protocol_options_add_tls_application_protocol` — HTTP/3 is UDP/QUIC so a TCP
+transport rules it out by construction) to test it.
 
-Also fixed and kept regardless of whether they turn out to matter: parts now
-download serialized rather than racing (`DownloadManager.swift`), and the retry
-backoff ceiling is 32s instead of 16s (`StreamFetcher.swift`). Neither is harmful;
-neither was sufficient on its own.
+**Result: identical wall.** On itag 135 the raw fetcher, plain `URLSession`, and
+Python's `urllib` all stop at byte 2,097,152. On itag 137 all three get to roughly
+12.6MB. HTTP/3 is not the cause — the earlier "Mac wins" result was purely the itag
+mismatch above. The raw-socket fetcher was deleted (never committed) once this
+was clear; it added real complexity for zero benefit.
 
-Option 2 above (or resurrecting original options 1/2) is a product decision, not a
-technical one. Ask before building.
+### Round 3 — real-time pacing, tested properly and disproven
+
+Better-supported hypothesis at the time: the byte cap scales with each format's
+bitrate (itag 135 stops at ~15s of playback-equivalent data, itag 137 at ~25s),
+which is the signature of a token-bucket-style throttle that penalizes downloading
+faster than real time. Tested by pacing chunk requests to exactly 1x the stream's
+own bitrate (sleep `bytesReceived / bytesPerSecond - elapsedTime` before each
+request) against a live URL, via `urllib` on the Mac.
+
+**Result: identical wall, at the identical byte offset, despite correctly staying
+paced to real time throughout.** Pacing does not help. This theory is wrong too —
+the ~15–25s figures across two formats were likely coincidence from a two-point
+sample, not a real relationship.
+
+### Where this leaves things
+
+Five independent, actually-tested theories are now ruled out: IP rotation, part
+concurrency, wrong client identity, HTTP/3 negotiation, and real-time pacing.
+Every one of them reproduces the exact same failure at the exact same byte offset
+for a given format, regardless of device, session type, network stack, or request
+timing. That consistency is itself informative — this is a deterministic
+per-format-and-URL serving limit, not flakiness — but nothing tried today explains
+*what* determines it or how to get past it.
+
+**Not yet tried, because it needs different tooling than "iterate on the fetch
+logic":** capture what a genuine YouTube client (the real Android/iOS app, or a
+browser) actually does differently on the wire — e.g. via a MITM proxy — while
+successfully streaming past this point on the same video. Real players send
+periodic telemetry/QoS pings during playback (`api/stats/...`-style endpoints);
+it's plausible the CDN ties continued serving of a stream to receiving those,
+which nothing in this app currently sends. That's a hypothesis, not a finding —
+it has not been tested.
+
+Also fixed and kept regardless: parts now download serialized rather than racing
+(`DownloadManager.swift` — `pendingParts`/`startNextPart`), and the retry backoff
+ceiling is 32s instead of 16s (`StreamFetcher.swift`). Neither is harmful; neither
+was sufficient on its own, and neither should be mistaken for progress on the real
+issue.
+
+The original options 1 and 2 several sections up (in-process download sharing one
+connection pool; re-extract per chunk) remain unexplored and are still a product
+decision, not a technical one — ask before building. Given today's results, treat
+them as unproven rather than promising; nothing found today points at them
+specifically.
 
 ---
 
@@ -204,6 +241,15 @@ there currently 400 — their payload shape needs fixing before they say anythin
 useful. `TVHTML5` reaches the endpoint fine but comes back `UNPLAYABLE` (needs a
 proof-of-origin token). Only `ANDROID_VR` actually returns a working stream right
 now. `python3 "Helper files/client-probe.py" <videoId>`.
+
+**Pitfall that cost real time on 2026-09-11: `client-probe.py` picks "the first
+avc1 adaptive format" per client, which is not necessarily the same itag across
+runs or across clients.** The byte cap where googlevideo starts refusing scales
+with the format's bitrate (see the round-2/round-3 write-up above), so comparing
+two runs that silently used different itags looks exactly like a real difference
+between whatever you changed and isn't one. Pin the itag explicitly (see
+`get_url.py`-style scripts, not currently checked in) before drawing any
+conclusion from a "gets further" result.
 
 ### Notes for whoever picks this up
 
